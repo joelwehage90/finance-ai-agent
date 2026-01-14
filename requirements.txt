@@ -1,0 +1,20 @@
+# Top-level production dependencies only.
+# Note: `relevanceai==10.2.2` pins pydantic==2.8.2, so we must keep our other deps compatible with that.
+
+fastapi==0.124.4
+uvicorn==0.38.0
+
+pydantic==2.8.2
+pydantic-settings==2.12.0
+
+pandas==2.3.3
+python-dotenv==1.2.1
+requests==2.32.5
+
+# NL→SQL (LangChain + Postgres)
+langchain==1.2.3
+langchain-community==0.4.1
+langchain-openai==1.1.7
+sqlalchemy==2.0.45
+psycopg[binary]==3.3.2
+
