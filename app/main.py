@@ -858,10 +858,31 @@ def artifacts_for_turn_endpoint(
 
     res = q.execute()
     rows = _res_data(res)
+    resolved_turn_id: Optional[int] = int(turn_id)
+
+    # Fallback: if no artifacts for this turn, return latest artifacts for the session.
+    if not rows:
+        q2 = (
+            supabase
+            .table("artifacts")
+            .select(",".join(cols))
+            .eq("session_id", session_id)
+            .order("turn_id", desc=True)
+            .order("updated_at", desc=True)
+            .order("created_at", desc=True)
+            .limit(limit)
+        )
+        if artifact_type:
+            q2 = q2.eq("artifact_type", artifact_type)
+        res2 = q2.execute()
+        rows = _res_data(res2)
+        resolved_turn_id = int(rows[0]["turn_id"]) if rows else None
 
     return {
         "session_id": session_id,
         "turn_id": turn_id,
+        "requested_turn_id": int(turn_id),
+        "resolved_turn_id": resolved_turn_id,
         "count": len(rows),
         "artifacts": rows,
     }

@@ -156,6 +156,14 @@ def fetch_formatted_artifacts(
     except Exception as e:
         st.session_state["last_fetch_error"] = f"/ui/artifacts failed: {e}"
         raise
+    try:
+        requested_turn_id = int(data.get("requested_turn_id") or turn_id)
+        resolved_turn_id = data.get("resolved_turn_id")
+        if resolved_turn_id is not None and int(resolved_turn_id) != requested_turn_id:
+            st.session_state["selected_turn"] = int(resolved_turn_id)
+            st.rerun()
+    except Exception:
+        pass
     return (data.get("artifacts") or [])  # type: ignore[return-value]
 
 

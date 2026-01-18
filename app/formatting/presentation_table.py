@@ -983,6 +983,53 @@ def _build_single_presentation_table_payload(
         if groups_dump:
             table_rows = _apply_filter_groups(table_rows, groups=groups_dump, notes=notes)
 
+    tool_name = str(meta.get("_tool_name") or meta.get("tool_name") or "").strip()
+    apply_income_default = tool_name == "income_statement_tool" and not filtered_sort
+    default_sort_note: Optional[str] = None
+    if apply_income_default:
+        # Keep totals row(s) last, even after sorting.
+        cols_for_totals = totals_columns or list(dims)
+        non_total_rows: List[Dict[str, Any]] = []
+        total_rows: List[Dict[str, Any]] = []
+        for r in table_rows:
+            if isinstance(r, dict) and _is_total_row(
+                r,
+                dims=dims,
+                totals_marker=totals_marker,
+                totals_columns=cols_for_totals,
+            ):
+                total_rows.append(r)
+            else:
+                non_total_rows.append(r)
+
+        # 1) Sort by absolute value of the rightmost value column (desc).
+        if value_cols:
+            sort_col = value_cols[-1]
+            default_sort_note = f"konto_typ asc(intäkter,kostnader), abs({sort_col}) desc"
+
+            def _abs_key(row: Dict[str, Any]):
+                v = _safe_float(row.get(sort_col))
+                if v is None:
+                    return (1, 0.0)  # None last
+                return (0, -abs(v))
+
+            non_total_rows = sorted(non_total_rows, key=_abs_key)
+
+        # 2) Group by konto_typ in a stable, categorical order.
+        if "konto_typ" in columns:
+            non_total_rows = _sort_rows(
+                non_total_rows,
+                [
+                    {
+                        "col": "konto_typ",
+                        "dir": "asc",
+                        "order": ["intäkter", "kostnader"],
+                    }
+                ],
+            )
+
+        table_rows = non_total_rows + total_rows
+
     if filtered_sort:
         table_rows = _sort_rows(table_rows, filtered_sort)
 
@@ -1037,6 +1084,7 @@ def _build_single_presentation_table_payload(
             "column_decimals": per_col,
             "column_formats": None,
             "sorted_by": (", ".join([f"{x['col']} {x.get('dir','desc')}" for x in filtered_sort]) if filtered_sort else None),
+            "default_sorted_by": default_sort_note,
             "row_limit": int(spec2.top_n) if spec2.top_n else None,
             "include_totals": spec2.include_totals,
             "totals": {"marker": totals_marker, "label": totals_label, "columns": totals_columns or list(dims)},
@@ -1194,7 +1242,11 @@ def build_presentation_table_payload_from_tool_run(
     if not isinstance(response_json, dict):
         raise ValueError("tool_runs.response_json must be an object/dict for formatting")
 
-    meta = response_json.get("meta") if isinstance(response_json.get("meta"), dict) else {}
+    meta_raw = response_json.get("meta") if isinstance(response_json.get("meta"), dict) else {}
+    meta = dict(meta_raw) if isinstance(meta_raw, dict) else {}
+    tool_name = tr.get("tool_name")
+    if tool_name is not None:
+        meta.setdefault("_tool_name", str(tool_name))
     explicit_cols = response_json.get("columns") if isinstance(response_json.get("columns"), list) else None
 
     # Single-table response (income_statement_tool style)
