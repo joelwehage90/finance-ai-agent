@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from .relevance_client import RelevanceAgent, RelevanceClient
 
@@ -39,6 +40,7 @@ from .tools.variance_tool import variance_tables
 from .tools.income_statement_tool import pnl_tables
 from .tools.nl_sql_tool import log_nl_sql_request, run_nl_sql
 from .formatting.format_spec import FormatSpec, default_format_spec, merge_with_default
+from .formatting.format_summary import build_format_summary_sv
 from .formatting.presentation_table import (
     build_presentation_table_payload_from_tool_run,
     redo_singleton_presentation_artifact,
@@ -51,6 +53,30 @@ from .formatting.spec_pipeline import resolve_incremental_format_spec
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Finance AI Agent API", version="0.1.0")
+
+# CORS (local dev)
+cors_env = os.environ.get("CORS_ORIGINS", "").strip()
+if cors_env:
+    allowed_origins = [o.strip() for o in cors_env.split(",") if o.strip()]
+else:
+    allowed_origins = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
+        "http://localhost:8080",
+        "http://127.0.0.1:8080",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 # ----------------------------
@@ -597,13 +623,33 @@ def format_endpoint(req: FormatToolRequest) -> Dict[str, Any]:
         artifact_session_id=req.session_id,
         artifact_turn_id=req.turn_id,
     )
-    # Attach notes (LLM best-effort + validation notes) into payload
-    if notes and isinstance(artifact_row.get("payload"), dict):
+    # Attach notes + interpretation into payload
+    if isinstance(artifact_row.get("payload"), dict):
         p = artifact_row["payload"]
-        existing = p.get("notes") if isinstance(p.get("notes"), list) else []
-        existing = [str(x) for x in existing if isinstance(x, str)]
-        existing.extend(notes)
-        p["notes"] = existing
+        if notes:
+            existing = p.get("notes") if isinstance(p.get("notes"), list) else []
+            existing = [str(x) for x in existing if isinstance(x, str)]
+            existing.extend(notes)
+            p["notes"] = existing
+        interp = resolved.get("interpretation")
+        if interp:
+            fmt = p.get("format") if isinstance(p.get("format"), dict) else {}
+            fmt["interpretation"] = interp
+            p["format"] = fmt
+        fmt = p.get("format") if isinstance(p.get("format"), dict) else {}
+        if fmt:
+            try:
+                summ = build_format_summary_sv(
+                    spec=spec,
+                    payload_format=fmt,
+                    derived_columns=(fmt.get("derived_columns") if isinstance(fmt.get("derived_columns"), list) else None),
+                    notes=(p.get("notes") if isinstance(p.get("notes"), list) else None),
+                )
+                fmt["summary_sv"] = summ.get("summary_sv")
+                fmt["steps_sv"] = summ.get("steps_sv")
+                p["format"] = fmt
+            except Exception:
+                pass
         artifact_row["payload"] = p
 
     up = upsert_singleton_presentation_artifact(

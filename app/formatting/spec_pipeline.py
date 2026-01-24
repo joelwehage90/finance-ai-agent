@@ -363,6 +363,9 @@ def resolve_incremental_format_spec(
 
     # LLM: partial changes (and possible reset)
     llm_reset = False
+    llm_partial: Optional[Dict[str, Any]] = None
+    llm_notes: List[str] = []
+    validation_notes: List[str] = []
     if format_request and str(format_request).strip():
         created_mode = "interpret_request"
         interp = interpret_format_request_openai(
@@ -371,8 +374,10 @@ def resolve_incremental_format_spec(
             base_spec=base_spec.model_dump(mode="json"),
         )
         llm_reset = bool(interp.get("reset"))
+        llm_partial = interp.get("partial") if isinstance(interp.get("partial"), dict) else None
         n2 = interp.get("notes") or []
-        notes.extend([str(x) for x in n2 if isinstance(x, str) and str(x).strip()])
+        llm_notes = [str(x) for x in n2 if isinstance(x, str) and str(x).strip()]
+        notes.extend(llm_notes)
 
         # If LLM asked to reset, restart from defaults BEFORE applying partial.
         if llm_reset:
@@ -383,7 +388,8 @@ def resolve_incremental_format_spec(
             partial = _merge_nested_overrides(base_spec, partial)
         applied = apply_partial_format_overrides(base=base_spec, raw=partial if isinstance(partial, dict) else {})
         base_spec = applied["spec"]
-        notes.extend([str(x) for x in (applied.get("notes") or []) if isinstance(x, str) and str(x).strip()])
+        validation_notes = [str(x) for x in (applied.get("notes") or []) if isinstance(x, str) and str(x).strip()]
+        notes.extend(validation_notes)
 
     # Manual/explicit overrides applied last (also incremental)
     if format_spec_overrides is not None:
@@ -404,6 +410,16 @@ def resolve_incremental_format_spec(
         seen.add(n2)
         deduped.append(n2)
 
+    interpretation = None
+    if format_request and str(format_request).strip():
+        interpretation = {
+            "request": str(format_request),
+            "partial": llm_partial,
+            "reset": bool(llm_reset),
+            "llm_notes": llm_notes,
+            "validation_notes": validation_notes,
+        }
+
     return {
         "spec": base_spec,
         "notes": deduped,
@@ -411,6 +427,7 @@ def resolve_incremental_format_spec(
         "effective_source_tool_run_id": effective_source_tool_run_id,
         "parent_artifact_id": parent_artifact_id,
         "reset": bool(reset or llm_reset),
+        "interpretation": interpretation,
     }
 
 

@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from .supabase_client import supabase
 from .formatting.format_spec import default_format_spec
+from .formatting.format_summary import build_format_summary_sv
 from .formatting.presentation_table import (
     build_presentation_table_payload_from_tool_run,
     upsert_singleton_presentation_artifact,
@@ -198,12 +199,32 @@ def log_tool_call(tool_name: str):
                                 title="Presentation (auto)",
                             )
                             # Attach LLM notes (best-effort) to payload.notes
-                            if llm_notes and isinstance(artifact_row.get("payload"), dict):
+                            if isinstance(artifact_row.get("payload"), dict):
                                 p = artifact_row["payload"]
-                                notes = p.get("notes") if isinstance(p.get("notes"), list) else []
-                                notes = [str(x) for x in notes if isinstance(x, str)]
-                                notes.extend([str(x) for x in llm_notes if isinstance(x, str) and str(x).strip()])
-                                p["notes"] = notes
+                                if llm_notes:
+                                    notes = p.get("notes") if isinstance(p.get("notes"), list) else []
+                                    notes = [str(x) for x in notes if isinstance(x, str)]
+                                    notes.extend([str(x) for x in llm_notes if isinstance(x, str) and str(x).strip()])
+                                    p["notes"] = notes
+                                interp = resolved.get("interpretation")
+                                if interp:
+                                    fmt = p.get("format") if isinstance(p.get("format"), dict) else {}
+                                    fmt["interpretation"] = interp
+                                    p["format"] = fmt
+                                fmt = p.get("format") if isinstance(p.get("format"), dict) else {}
+                                if fmt:
+                                    try:
+                                        summ = build_format_summary_sv(
+                                            spec=spec,
+                                            payload_format=fmt,
+                                            derived_columns=(fmt.get("derived_columns") if isinstance(fmt.get("derived_columns"), list) else None),
+                                            notes=(p.get("notes") if isinstance(p.get("notes"), list) else None),
+                                        )
+                                        fmt["summary_sv"] = summ.get("summary_sv")
+                                        fmt["steps_sv"] = summ.get("steps_sv")
+                                        p["format"] = fmt
+                                    except Exception:
+                                        pass
                             up = upsert_singleton_presentation_artifact(
                                 session_id=str(session_id),
                                 turn_id=int(turn_id),
