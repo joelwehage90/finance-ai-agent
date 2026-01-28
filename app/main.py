@@ -21,6 +21,20 @@ from .schemas.variance import VarianceRequest
 from .schemas.pnl import PnlRequest
 from .schemas.format_tool import FormatToolRequest
 from .schemas.nl_sql import NlSqlRequest, NlSqlResponse
+from .schemas.report_builder import (
+    ReportBuildRequest,
+    ReportBuildResponse,
+    PresentationArtifactsRequest,
+    MaterializeTableViewRequest,
+    MaterializeTableViewResponse,
+)
+from .report_builder import (
+    build_report_tables,
+    fetch_report_run,
+    fetch_presentation_artifacts,
+    materialize_table_view,
+)
+from .tools.variance_tool import _choose_source_view
 
 try:
     from .schemas.definitions import DefinitionsRequest
@@ -733,6 +747,80 @@ def nl_sql_endpoint(req: NlSqlRequest) -> Dict[str, Any]:
     )
 
     return resp.model_dump(mode="json")
+
+
+# ----------------------------
+# Report Builder (V0)
+# ----------------------------
+
+@app.post("/api/report-builder/build-tables", dependencies=[Depends(require_api_key)])
+def report_builder_build_tables(req: ReportBuildRequest) -> Dict[str, Any]:
+    out = build_report_tables(req.model_dump(mode="json"))
+    return ReportBuildResponse.model_validate(out).model_dump(mode="json")
+
+
+@app.get("/api/report-builder/report-run/{report_run_id}", dependencies=[Depends(require_api_key)])
+def report_builder_fetch_report_run(report_run_id: str) -> Dict[str, Any]:
+    out = fetch_report_run(report_run_id=report_run_id)
+    return ReportBuildResponse.model_validate(out).model_dump(mode="json")
+
+
+@app.post("/api/report-builder/presentation-artifacts", dependencies=[Depends(require_api_key)])
+def report_builder_fetch_presentation_artifacts(req: PresentationArtifactsRequest) -> Dict[str, Any]:
+    rows = fetch_presentation_artifacts(artifact_ids=req.artifact_ids)
+    return {"count": len(rows), "artifacts": rows}
+
+
+@app.post("/api/report-builder/materialize-table-view", dependencies=[Depends(require_api_key)])
+def report_builder_materialize_table_view(req: MaterializeTableViewRequest) -> Dict[str, Any]:
+    new_presentation_id = materialize_table_view(
+        report_run_id=req.report_run_id,
+        report_table_id=req.report_table_id,
+        presentation_artifact_id=req.presentation_artifact_id,
+        module_id=req.module_id,
+        view_spec=req.view_spec,
+        visibility=req.visibility,
+        title=req.title,
+    )
+    return MaterializeTableViewResponse(
+        report_table_id=req.report_table_id,
+        presentation_artifact_id=new_presentation_id,
+    ).model_dump(mode="json")
+
+
+class VarianceFilterOptionsRequest(BaseModel):
+    grain: List[str]
+    filters: Optional[Dict[str, Any]] = None
+
+
+class VarianceFilterOptionsResponse(BaseModel):
+    options: Dict[str, List[str]]
+
+
+@app.post("/api/report-builder/variance-filter-options", dependencies=[Depends(require_api_key)])
+def report_builder_variance_filter_options(req: VarianceFilterOptionsRequest) -> Dict[str, Any]:
+    grain = [str(x) for x in (req.grain or []) if str(x).strip()]
+    filters = req.filters if isinstance(req.filters, dict) else None
+    table_name, _date_col = _choose_source_view(grain, filters)
+    candidates = ["rr_level_1", "rr_level_2", "unit", "account", "project", "customer", "supplier", "product"]
+    options: Dict[str, List[str]] = {}
+    for col in candidates:
+        try:
+            res = (
+                supabase
+                .table(table_name)
+                .select(col)
+                .not_.is_(col, None)
+                .limit(200)
+                .execute()
+            )
+            rows = res.data or []
+            values = sorted({str(r.get(col)) for r in rows if isinstance(r, dict) and r.get(col) not in (None, "")})
+            if values:
+                options[col] = values
+        except Exception:
+            continue
+    return VarianceFilterOptionsResponse(options=options).model_dump(mode="json")
 
 
 class FormatUndoRedoRequest(BaseModel):
