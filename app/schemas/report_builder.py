@@ -35,8 +35,10 @@ class TableArtifactRef(BaseModel):
 
 class CommentPlaceholder(BaseModel):
     placeholder_id: str
-    status: Literal["empty"]
+    status: Literal["empty", "filled", "approved"]
     text: Optional[str] = None
+    reviewer_summary: Optional[Dict[str, Any]] = None
+    evidence_refs: Optional[List[Dict[str, Any]]] = None
     payload: Optional[Dict[str, Any]] = None
 
 
@@ -54,6 +56,13 @@ class ReportBuildResponse(BaseModel):
     status: Literal["ok", "error"]
     modules: List[ModuleBuildResult]
     report_spec: Optional[Dict[str, Any]] = None
+
+
+class GenerateCommentsRequest(BaseModel):
+    report_run_id: str
+    max_rounds: Optional[int] = 1
+    model: Optional[str] = None
+    language: Optional[str] = None
 
 
 class PresentationArtifactsRequest(BaseModel):

@@ -8,7 +8,8 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from .relevance_client import RelevanceAgent, RelevanceClient
@@ -27,12 +28,14 @@ from .schemas.report_builder import (
     PresentationArtifactsRequest,
     MaterializeTableViewRequest,
     MaterializeTableViewResponse,
+    GenerateCommentsRequest,
 )
 from .report_builder import (
     build_report_tables,
     fetch_report_run,
     fetch_presentation_artifacts,
     materialize_table_view,
+    generate_report_comments,
 )
 from .tools.variance_tool import _choose_source_view
 
@@ -70,27 +73,83 @@ app = FastAPI(title="Finance AI Agent API", version="0.1.0")
 
 # CORS (local dev)
 cors_env = os.environ.get("CORS_ORIGINS", "").strip()
+default_origins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:5174",
+    "http://127.0.0.1:5174",
+    "http://localhost:4173",
+    "http://127.0.0.1:4173",
+    "http://localhost:4174",
+    "http://127.0.0.1:4174",
+    "http://localhost:8080",
+    "http://127.0.0.1:8080",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
 if cors_env:
-    allowed_origins = [o.strip() for o in cors_env.split(",") if o.strip()]
+    env_origins = [o.strip() for o in cors_env.split(",") if o.strip()]
+    allowed_origins = sorted(set(env_origins + default_origins))
 else:
-    allowed_origins = [
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:5174",
-        "http://127.0.0.1:5174",
-        "http://localhost:8080",
-        "http://127.0.0.1:8080",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ]
+    allowed_origins = default_origins
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
+    allow_origin_regex=r"^http://(localhost|127\\.0\\.0\\.1)(:\\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def _force_local_cors_headers(request, call_next):
+    response = await call_next(request)
+    origin = request.headers.get("origin")
+    if origin and (
+        origin.startswith("http://localhost")
+        or origin.startswith("http://127.0.0.1")
+    ):
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Vary"] = "Origin"
+    return response
+
+
+@app.get("/debug/cors")
+def debug_cors(origin: Optional[str] = Header(default=None)):
+    return {
+        "origin": origin,
+        "allowed_origins": allowed_origins,
+        "cors_env": cors_env or None,
+    }
+
+
+@app.get("/debug/llm-config")
+def debug_llm_config():
+    return {
+        "openai_api_key_set": bool(os.environ.get("OPENAI_API_KEY") or settings.OPENAI_API_KEY),
+        "openai_base_url": (os.environ.get("OPENAI_BASE_URL") or settings.OPENAI_BASE_URL),
+        "openai_model": (os.environ.get("OPENAI_MODEL") or settings.OPENAI_MODEL or "gpt-4o-mini"),
+    }
+
+
+@app.post("/debug/post")
+async def debug_post(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    return {
+        "ok": True,
+        "origin": request.headers.get("origin"),
+        "headers": {
+            "content-type": request.headers.get("content-type"),
+            "x-api-key": request.headers.get("x-api-key"),
+        },
+        "body": body,
+    }
 
 
 # ----------------------------
@@ -786,6 +845,23 @@ def report_builder_materialize_table_view(req: MaterializeTableViewRequest) -> D
         report_table_id=req.report_table_id,
         presentation_artifact_id=new_presentation_id,
     ).model_dump(mode="json")
+
+
+@app.post("/api/report-builder/generate-comments", dependencies=[Depends(require_api_key)])
+def report_builder_generate_comments(req: GenerateCommentsRequest) -> Dict[str, Any]:
+    try:
+        out = generate_report_comments(
+            report_run_id=req.report_run_id,
+            max_rounds=int(req.max_rounds or 1),
+            model=req.model,
+            language=req.language,
+        )
+        return ReportBuildResponse.model_validate(out).model_dump(mode="json")
+    except Exception as exc:
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"generate-comments failed: {type(exc).__name__}: {exc}"},
+        )
 
 
 class VarianceFilterOptionsRequest(BaseModel):
